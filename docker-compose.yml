@@ -23,6 +23,9 @@ services:
       - '6379:6379'
     networks:
       - nest_network
+    volumes:
+      - C:\Users\mudas\redis\redis.conf:/usr/local/etc/redis/redis.conf
+    command: ['redis-server', '/usr/local/etc/redis/redis.conf']
 
 networks:
   nest_network:

@@ -9,6 +9,7 @@ import { JwtStrategy } from './strategy/jwt.strategy';
 import { User } from '../users/user.entity';
 import { RedisService } from '../redis/redis.service';
 import { RedisModule } from 'src/redis/redis.module';
+import { CacheModule } from '@nestjs/cache-manager';
 
 @Module({
   imports: [

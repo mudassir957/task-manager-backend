@@ -30,26 +30,25 @@ export class AuthController {
 
   @Post('login')
   @UseGuards(LocalAuthGuard)
-  login(@Body() authDto: AuthDto) {
-    return this.authService.login(authDto);
+  login(@Body() authDto: AuthDto, @Res() res: Response) {
+    return this.authService.login(authDto, res);
   }
 
   @Post('signout')
   @UseGuards(JwtAuthGuard)
-  signout(@Req() req: Request, @Res() res: Response) {
-    const token =
-      req.cookies?.access_token || req.headers.authorization?.split(' ')[1];
+  async signout(@Req() req: Request, @Res() res: Response) {
+    try {
+      const token =
+        req.cookies?.access_token || req.headers.authorization?.split(' ')[1];
 
-    if (token) {
-      this.authService.signout(token);
+      if (!token) {
+        throw new UnauthorizedException('No token provided');
+      }
+
+      return this.authService.signout(token, res);
+    } catch (error) {
+      throw new UnauthorizedException('Error signing out user');
     }
-
-    res.cookie('access_token', '', {
-      expires: new Date(0),
-      httpOnly: true,
-      secure: true,
-    });
-    return res.status(200).json({ message: 'User signed out successfully' });
   }
 
   @Get('profile')
@@ -63,5 +62,29 @@ export class AuthController {
   @Roles(UserRole.ADMIN)
   adminRoute() {
     return { message: 'Welcome, Admin!' };
+  }
+
+  @Post('refresh-token')
+  @Public()
+  async refreshToken(@Req() req: Request, @Res() res: Response) {
+    try {
+      const refreshToken = req.cookies?.refresh_token || req.body.refreshToken;
+      console.log('Refresh token Controller:', refreshToken);
+
+      if (!refreshToken) {
+        throw new UnauthorizedException('Refresh token not provided');
+      }
+
+      const newAccessToken = await this.authService.refreshAccessToken(
+        refreshToken,
+        res,
+      );
+
+      return res
+        .status(200)
+        .json({ access_token: newAccessToken.access_token });
+    } catch (error) {
+      throw new UnauthorizedException('Could not refresh access token');
+    }
   }
 }

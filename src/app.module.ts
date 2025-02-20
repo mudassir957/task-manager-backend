@@ -3,6 +3,10 @@ import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
+import { CacheModule } from '@nestjs/cache-manager';
+import Keyv from 'keyv';
+import { createKeyv } from '@keyv/redis';
+import { CacheableMemory } from 'cacheable';
 
 @Module({
   imports: [
@@ -15,6 +19,20 @@ import { AuthModule } from './auth/auth.module';
     }),
     UsersModule,
     AuthModule,
+    CacheModule.registerAsync({
+      useFactory: async () => ({
+        stores: [
+          new Keyv({
+            store: new CacheableMemory({
+              ttl: 7 * 24 * 60 * 60,
+              lruSize: 5000,
+            }),
+          }),
+          createKeyv('redis://localhost:6379'),
+        ],
+      }),
+      isGlobal: true,
+    }),
   ],
 })
 export class AppModule {}
