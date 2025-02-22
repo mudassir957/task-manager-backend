@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Post,
+  Query,
   Req,
   Res,
   UnauthorizedException,
@@ -17,6 +18,9 @@ import { CreateUserDto } from 'src/users/dto/create-user.dto';
 import { Request, Response } from 'express';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { LocalAuthGuard } from './guards/local-auth.guard';
+import { ForgetPasswordDto } from './dto/forget-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { Throttle } from '@nestjs/throttler';
 
 @Controller('auth')
 export class AuthController {
@@ -29,6 +33,7 @@ export class AuthController {
   }
 
   @Post('login')
+  @Throttle({ default: { limit: 5, ttl: 30000 } })
   @UseGuards(LocalAuthGuard)
   login(@Body() authDto: AuthDto, @Res() res: Response) {
     return this.authService.login(authDto, res);
@@ -69,14 +74,15 @@ export class AuthController {
   async refreshToken(@Req() req: Request, @Res() res: Response) {
     try {
       const refreshToken = req.cookies?.refresh_token || req.body.refreshToken;
-      console.log('Refresh token Controller:', refreshToken);
+      const deviceId = req.body.deviceId;
 
-      if (!refreshToken) {
+      if (!refreshToken || !deviceId) {
         throw new UnauthorizedException('Refresh token not provided');
       }
 
       const newAccessToken = await this.authService.refreshAccessToken(
         refreshToken,
+        deviceId,
         res,
       );
 
@@ -87,4 +93,32 @@ export class AuthController {
       throw new UnauthorizedException('Could not refresh access token');
     }
   }
+
+  @Get('verify-email')
+  @Public()
+  async verifyEmail(@Query('token') token: string) {
+    console.log('Verify Email Controller:', token);
+    return this.authService.verifyEmail(token);
+  }
+
+  @Post('forgot-password')
+  @Public()
+  async forgotPassword(@Body() forgotPasswordDto: ForgetPasswordDto) {
+    return this.authService.forgotPassword(forgotPasswordDto.email);
+  }
+
+  @Post('reset-password')
+  @Public()
+  async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
+    return this.authService.resetPassword(
+      resetPasswordDto.token,
+      resetPasswordDto.newPassword,
+    );
+  }
+
+  // @Post('resend-verification')
+  // @Public()
+  // async resendVerification(@Body() authDto: AuthDto) {
+  //   return this.authService.sendVerificationEmail(authDto.email);
+  // }
 }

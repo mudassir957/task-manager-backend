@@ -7,6 +7,9 @@ import { CacheModule } from '@nestjs/cache-manager';
 import Keyv from 'keyv';
 import { createKeyv } from '@keyv/redis';
 import { CacheableMemory } from 'cacheable';
+import { MailModule } from './mail/mail.module';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 
 @Module({
   imports: [
@@ -19,6 +22,7 @@ import { CacheableMemory } from 'cacheable';
     }),
     UsersModule,
     AuthModule,
+    MailModule,
     CacheModule.registerAsync({
       useFactory: async () => ({
         stores: [
@@ -33,6 +37,19 @@ import { CacheableMemory } from 'cacheable';
       }),
       isGlobal: true,
     }),
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60000,
+        limit: 5,
+      },
+    ]),
+    MailModule,
+  ],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
   ],
 })
 export class AppModule {}

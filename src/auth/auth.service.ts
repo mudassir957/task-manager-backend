@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Inject,
   Injectable,
   Logger,
@@ -16,10 +17,14 @@ import { RedisService } from '../redis/redis.service';
 import { v4 as uuidv4 } from 'uuid';
 import { Response } from 'express';
 import { CACHE_MANAGER, Cache } from '@nestjs/cache-manager';
+import { Resend } from 'resend';
+import { jwtConstants } from './constants';
+import { Throttle } from '@nestjs/throttler';
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  private resend = new Resend(process.env.RESEND_API_KEY);
   constructor(
     @Inject(CACHE_MANAGER) private cacheManager: Cache,
     @InjectRepository(User)
@@ -27,27 +32,6 @@ export class AuthService {
     private jwtService: JwtService,
     private redisService: RedisService,
   ) {}
-
-  // async onModuleInit() {
-  //   console.log('Checking Redis connection...');
-  //   console.log('Store', this.cacheManager.stores);
-
-  //   try {
-  //     await this.cacheManager.set('test_key', 'test_value', 60000);
-  //     const value = await this.cacheManager.get('test_key');
-
-  //     console.log('Redis Test Value:', value);
-
-  //     if (value !== 'test_value') {
-  //       throw new Error('Redis connection failed');
-  //     } else {
-  //       console.log('✅ Redis is working properly');
-  //     }
-  //   } catch (error) {
-  //     console.error('❌ Redis Error:', error);
-  //     throw error;
-  //   }
-  // }
 
   async signup(createUserDto: CreateUserDto) {
     const { email, name, password, role } = createUserDto;
@@ -62,24 +46,82 @@ export class AuthService {
       email,
       password,
       role: role || UserRole.USER,
+      isVerified: false,
     });
     await this.userRepository.save(user);
-    return { message: 'User registered successfully' };
+
+    const verificationToken = await this.jwtService.signAsync(
+      { email },
+      { secret: jwtConstants.secret, expiresIn: '1h' },
+    );
+
+    console.log('Verification Token' + verificationToken);
+
+    await this.cacheManager.set(`verify:${email}`, verificationToken, 60000);
+
+    const verificationLink = `http://localhost:3000/auth/verify-email?token=${verificationToken}`;
+    await this.sendVerificationEmail(email, verificationLink);
+
+    return {
+      message: 'User registered successfully. Please verify your email.',
+      verificationLink,
+    };
+  }
+
+  async sendVerificationEmail(email: string, verificationLink: string) {
+    try {
+      await this.resend.emails.send({
+        from: process.env.EMAIL_FROM,
+        to: email,
+        subject: 'Verify your email',
+        html: `<p>Click <a href="${verificationLink}">here</a> to verify your email.</p>`,
+      });
+    } catch (error) {
+      this.logger.error('Error sending verification email:', error);
+      throw new BadRequestException('Failed to send verification email.');
+    }
+  }
+
+  async verifyEmail(token: string) {
+    try {
+      const decoded = await this.jwtService.verifyAsync(token);
+      const email = decoded.email;
+
+      const storedToken = await this.cacheManager.get(`verify:${email}`);
+      if (!storedToken || storedToken !== token) {
+        throw new UnauthorizedException(
+          'Invalid or expired verification token',
+        );
+      }
+
+      const user = await this.userRepository.findOne({ where: { email } });
+      if (!user) {
+        throw new UnauthorizedException('User not found');
+      }
+
+      await this.userRepository.update(user.id, { isVerified: true });
+      await this.cacheManager.del(`verify:${email}`);
+
+      return { message: 'Email successfully verified!' };
+    } catch (error) {
+      throw new UnauthorizedException('Email verification failed');
+    }
   }
 
   async login(authDto: AuthDto, res: Response) {
     try {
-      console.log('Login function reached with:', authDto);
       const { email, password } = authDto;
 
-      // Find user by email
       const user = await this.userRepository.findOne({ where: { email } });
       if (!user) {
         console.log('User not found');
         throw new UnauthorizedException('Invalid credentials');
       }
 
-      // Compare passwords
+      // if (user.isVerified === false) {
+      //   throw new UnauthorizedException('First verify throught email link');
+      // }
+
       const isPasswordValid = await bcrypt.compare(password, user.password);
       if (!isPasswordValid) {
         console.log('Invalid password');
@@ -96,7 +138,8 @@ export class AuthService {
 
       // Generate Access Token
       const accessToken = await this.jwtService.signAsync(payload, {
-        expiresIn: '15m',
+        secret: jwtConstants.secret,
+        expiresIn: '1h',
       });
 
       // Generate Refresh Token
@@ -105,18 +148,14 @@ export class AuthService {
         { expiresIn: '7d' },
       );
 
-      await this.cacheManager.set(
-        `refreshToken:${user.id}`,
-        refreshToken,
-        7 * 24 * 60 * 60,
-      );
-      const storedToken = await this.cacheManager.get(
-        `refreshToken:${user.id}`,
-      );
-      console.log('Stored Refresh Token REDIS:', storedToken);
+      const deviceId = uuidv4();
 
-      // Hash Refresh Token before saving in the database
-      // const hashedRefreshToken = await bcrypt.hash(refreshToken, 10);
+      await this.cacheManager.set(
+        `refreshToken:${user.id}:${deviceId}`,
+        refreshToken,
+        604800,
+      );
+
       await this.userRepository.update(user.id, {
         refreshToken,
       });
@@ -124,14 +163,23 @@ export class AuthService {
       // Set Refresh Token in HTTP-only cookie
       res.cookie('refresh_token', refreshToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production', // Secure in production
+        secure: process.env.NODE_ENV === 'production',
         sameSite: 'strict',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+
+      res.cookie('device_id', deviceId, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
       });
 
       console.log('Login successful');
       return res.status(200).json({
         access_token: accessToken,
+        refresh_token: refreshToken,
+        device_id: deviceId,
       });
     } catch (error) {
       console.error('Error during login:', error);
@@ -195,10 +243,15 @@ export class AuthService {
 
   async refreshAccessToken(
     refreshToken: string,
+    deviceId: string,
     res: Response,
   ): Promise<{ access_token: string }> {
     if (!refreshToken) {
       throw new UnauthorizedException('Refresh token missing');
+    }
+
+    if (!deviceId) {
+      throw new UnauthorizedException('Device ID missing');
     }
 
     try {
@@ -207,12 +260,15 @@ export class AuthService {
         where: { id: decoded.id },
       });
 
-      if (!user || !user.refreshToken) {
+      if (!user) {
         throw new UnauthorizedException('User not found');
       }
 
-      // Validate stored refresh token
-      if (refreshToken !== user.refreshToken) {
+      const storedRefreshToken = await this.cacheManager.get<string>(
+        `refreshToken:${decoded.id}:${deviceId}`,
+      );
+
+      if (!storedRefreshToken || refreshToken !== storedRefreshToken) {
         throw new UnauthorizedException('Invalid refresh token');
       }
 
@@ -235,7 +291,7 @@ export class AuthService {
 
       // Store new refresh token in Redis
       await this.cacheManager.set(
-        `refreshToken:${decoded.id}`,
+        `refreshToken:${decoded.id}:${deviceId}`,
         newRefreshToken,
         7 * 24 * 60 * 60,
       );
@@ -257,7 +313,56 @@ export class AuthService {
         access_token: newAccessToken,
       };
     } catch (error) {
+      console.error('Error during token refresh:', error);
       throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+  }
+
+  async forgotPassword(email: string) {
+    const user = await this.userRepository.findOne({ where: { email } });
+
+    if (!user) {
+      throw new UnauthorizedException('User with this email does not exist');
+    }
+
+    const resetToken = await this.jwtService.signAsync(
+      { email },
+      { expiresIn: '15m' },
+    );
+    console.log(resetToken);
+
+    await this.cacheManager.set(`reset:${email}`, resetToken, 360000);
+
+    const resetLink = `http://localhost:3000/auth/reset-password?token=${resetToken}`;
+    await this.sendVerificationEmail(email, resetLink);
+
+    return { message: 'Password reset link sent to your email.', resetLink };
+  }
+
+  async resetPassword(token: string, newPassword: string) {
+    try {
+      console.log('RESET PASSWORD TRIGGERS');
+      const decoded = await this.jwtService.verifyAsync(token);
+      console.log(decoded);
+      const email = decoded.email;
+
+      const storedToken = await this.cacheManager.get(`reset:${email}`);
+      if (!storedToken || storedToken !== token) {
+        throw new UnauthorizedException('Invalid or expired reset token');
+      }
+
+      const user = await this.userRepository.findOne({ where: { email } });
+      if (!user) {
+        throw new UnauthorizedException('User not found');
+      }
+
+      user.password = newPassword;
+      await this.userRepository.save(user);
+      await this.cacheManager.del(`reset:${email}`);
+
+      return { message: 'Password has been reset successfully.' };
+    } catch (error) {
+      throw new UnauthorizedException('Password reset failed');
     }
   }
 }
