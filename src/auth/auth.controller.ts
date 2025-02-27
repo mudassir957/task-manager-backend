@@ -35,23 +35,88 @@ export class AuthController {
   @Post('login')
   @Throttle({ default: { limit: 5, ttl: 30000 } })
   @UseGuards(LocalAuthGuard)
-  login(@Body() authDto: AuthDto, @Res() res: Response) {
-    return this.authService.login(authDto, res);
+  async login(@Body() authDto: AuthDto, @Res() res: Response) {
+    try {
+      const { accessToken, refreshToken, deviceId } =
+        await this.authService.login(authDto);
+
+      res.cookie('refresh_token', refreshToken, {
+        httpOnly: true,
+        secure: false,
+        path: '/',
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+
+      res.cookie('access_token', accessToken, {
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax',
+        path: '/',
+        // maxAge: 60 * 60 * 1000,
+        maxAge: 60 * 1000,
+      });
+
+      res.cookie('device_id', deviceId, {
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      });
+      return res.status(200).json({ access_token: accessToken });
+    } catch (error) {
+      console.error('Error during login:', error);
+      throw new UnauthorizedException(error.message || 'Login failed');
+    }
   }
 
   @Post('signout')
   @UseGuards(JwtAuthGuard)
   async signout(@Req() req: Request, @Res() res: Response) {
     try {
-      const token =
+      console.log('Cookies Signout', req.cookies); // debugging
+      console.log('Authorization Header:', req.headers.authorization);
+
+      const accessToken =
         req.cookies?.access_token || req.headers.authorization?.split(' ')[1];
 
-      if (!token) {
-        throw new UnauthorizedException('No token provided');
+      const refreshToken = req.cookies?.refresh_token;
+      const deviceId = req.cookies?.device_id;
+
+      if (!accessToken || !refreshToken || !deviceId) {
+        throw new UnauthorizedException('No valid session found');
       }
 
-      return this.authService.signout(token, res);
+      // Call the signout service function
+      console.log(accessToken, refreshToken, deviceId);
+      await this.authService.signout(accessToken, refreshToken, deviceId);
+
+      // Clear cookies on signout
+      res.clearCookie('refresh_token', {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+        path: '/',
+      });
+
+      res.clearCookie('device_id', {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+        path: '/',
+      });
+
+      res.clearCookie('access_token', {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+        path: '/',
+      });
+
+      return res.status(200).json({ message: 'Successfully signed out' });
     } catch (error) {
+      console.error('Signout error:', error);
       throw new UnauthorizedException('Error signing out user');
     }
   }
@@ -74,21 +139,50 @@ export class AuthController {
   async refreshToken(@Req() req: Request, @Res() res: Response) {
     try {
       const refreshToken = req.cookies?.refresh_token || req.body.refreshToken;
-      const deviceId = req.body.deviceId;
+      const deviceId = req.cookies?.device_id || req.body.deviceId;
+
+      console.log('Refresh Token from cookies refreshToken', refreshToken);
+      console.log('DEVICE ID from cookies', deviceId);
 
       if (!refreshToken || !deviceId) {
         throw new UnauthorizedException('Refresh token not provided');
       }
 
-      const newAccessToken = await this.authService.refreshAccessToken(
-        refreshToken,
-        deviceId,
-        res,
+      const { access_token, refresh_token } =
+        await this.authService.refreshAccessToken(refreshToken, deviceId);
+
+      // Set new access token in cookie
+      res.cookie('access_token', access_token, {
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 60 * 1000, // 15 minutes
+      });
+
+      // Set new access token in cookie
+      res.cookie('refresh_token', refresh_token, {
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      });
+
+      // Set new access token in cookie
+      res.cookie('device_id', deviceId, {
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 7 * 24 * 60 * 60 * 1000, // 15 minutes
+      });
+
+      console.log(
+        `ACCESS TOKEN ${access_token} and REFRESH TOKEN ${refresh_token}`,
       );
 
-      return res
-        .status(200)
-        .json({ access_token: newAccessToken.access_token });
+      return res.status(200).json({ access_token });
     } catch (error) {
       throw new UnauthorizedException('Could not refresh access token');
     }
