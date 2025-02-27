@@ -108,7 +108,7 @@ export class AuthService {
     }
   }
 
-  async login(authDto: AuthDto, res: Response) {
+  async login(authDto: AuthDto) {
     try {
       const { email, password } = authDto;
 
@@ -139,7 +139,7 @@ export class AuthService {
       // Generate Access Token
       const accessToken = await this.jwtService.signAsync(payload, {
         secret: jwtConstants.secret,
-        expiresIn: '1h',
+        expiresIn: '1m',
       });
 
       // Generate Refresh Token
@@ -160,61 +160,51 @@ export class AuthService {
         refreshToken,
       });
 
-      // Set Refresh Token in HTTP-only cookie
-      res.cookie('refresh_token', refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
-
-      res.cookie('device_id', deviceId, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-      });
-
       console.log('Login successful');
-      return res.status(200).json({
-        access_token: accessToken,
-        refresh_token: refreshToken,
-        device_id: deviceId,
-      });
+      console.log('Login backend Token:', accessToken);
+      console.log('Login backend Refresh Token:', refreshToken);
+      console.log('Login backend Device ID:', deviceId);
+      return { accessToken, refreshToken, deviceId };
     } catch (error) {
       console.error('Error during login:', error);
       throw new UnauthorizedException(error.message || 'Login failed');
     }
   }
 
-  async signout(token: string, res: Response) {
+  async signout(accessToken: string, refreshToken: string, deviceId: string) {
     try {
-      const decode = this.jwtService.decode(token) as JwtPayload;
-      if (!decode || !decode.jti) {
-        this.logger.error('No jti found in token');
-        throw new Error('Invalid token');
+      // Decode access token to extract JWT ID (jti) and user ID
+      const decodedAccess = this.jwtService.decode(accessToken) as JwtPayload;
+      if (!decodedAccess || !decodedAccess.jti) {
+        this.logger.error('No jti found in access token');
+        throw new Error('Invalid access token');
       }
-      this.logger.log(`Blacklisting token with jti: ${decode.jti}`);
-      // blacklist token in redis
-      await this.redisService.blacklistToken(decode.jti, 3600);
 
-      // Remove refresh token from Redis
-      await this.cacheManager.del(`refreshToken:${decode.id}`);
+      // Blacklist access token using Redis
+      this.logger.log(
+        `Blacklisting access token with jti: ${decodedAccess.jti}`,
+      );
+      await this.redisService.blacklistToken(decodedAccess.jti, 3600);
 
-      // remove refresh token from database
-      await this.userRepository.update(decode.id, {
+      // Decode refresh token to extract user ID
+      const decodedRefresh = this.jwtService.decode(refreshToken) as JwtPayload;
+      if (!decodedRefresh || !decodedRefresh.id) {
+        this.logger.error('Invalid refresh token');
+        throw new Error('Invalid refresh token');
+      }
+
+      // Remove refresh token from Redis using user ID and device ID
+      await this.cacheManager.del(
+        `refreshToken:${decodedRefresh.id}:${deviceId}`,
+      );
+
+      // Remove refresh token from database
+      await this.userRepository.update(decodedRefresh.id, {
         refreshToken: null,
       });
 
-      res.cookie('refresh_token', '', {
-        expires: new Date(0),
-        httpOnly: true,
-        secure: true,
-      });
-
-      return res.status(200).json({
-        message: 'Logout successful',
-      });
+      this.logger.log(`User ${decodedRefresh.id} signed out successfully`);
+      return { message: 'User signed out successfully' };
     } catch (error) {
       this.logger.error('Error signing out user:', error);
       throw new UnauthorizedException('Error signing out user');
@@ -241,21 +231,16 @@ export class AuthService {
     return user;
   }
 
-  async refreshAccessToken(
-    refreshToken: string,
-    deviceId: string,
-    res: Response,
-  ): Promise<{ access_token: string }> {
-    if (!refreshToken) {
-      throw new UnauthorizedException('Refresh token missing');
-    }
-
-    if (!deviceId) {
-      throw new UnauthorizedException('Device ID missing');
-    }
-
+  async refreshAccessToken(refreshToken: string, deviceId: string) {
     try {
-      const decoded = this.jwtService.verify(refreshToken);
+      if (!refreshToken && !deviceId) {
+        throw new UnauthorizedException('Refresh token and device id missing');
+      }
+
+      const decoded = this.jwtService.verify(refreshToken, {
+        secret: jwtConstants.secret,
+      });
+
       const user = await this.userRepository.findOne({
         where: { id: decoded.id },
       });
@@ -281,13 +266,17 @@ export class AuthService {
       };
 
       const newAccessToken = await this.jwtService.signAsync(payload, {
-        expiresIn: '15m',
+        secret: jwtConstants.secret,
+        expiresIn: '1m',
       });
 
       const newRefreshToken = await this.jwtService.signAsync(
         { id: decoded.id },
         { expiresIn: '7d' },
       );
+
+      // remove old refresh token from Redis
+      await this.cacheManager.del(`refreshToken:${decoded.id}:${deviceId}`);
 
       // Store new refresh token in Redis
       await this.cacheManager.set(
@@ -301,16 +290,9 @@ export class AuthService {
         refreshToken: newRefreshToken,
       });
 
-      // Set new refresh token in HTTP-only cookie
-      res.cookie('refresh_token', newRefreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
-        maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      });
-
       return {
         access_token: newAccessToken,
+        refresh_token: newRefreshToken,
       };
     } catch (error) {
       console.error('Error during token refresh:', error);
