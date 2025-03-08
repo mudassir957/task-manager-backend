@@ -12,7 +12,7 @@ import {
 import { AuthService } from './auth.service';
 import { AuthDto } from './dto/auth.dto';
 import { RolesGuard } from './guards/roles.guard';
-import { UserRole } from 'src/users/user.entity';
+import { User, UserRole } from 'src/users/user.entity';
 import { Public, Roles } from './decorators/decorator';
 import { CreateUserDto } from 'src/users/dto/create-user.dto';
 import { Request, Response } from 'express';
@@ -21,6 +21,7 @@ import { LocalAuthGuard } from './guards/local-auth.guard';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { Throttle } from '@nestjs/throttler';
+import { GetUser } from './decorators/get-user.decorator';
 
 @Controller('auth')
 export class AuthController {
@@ -53,8 +54,7 @@ export class AuthController {
         secure: false,
         sameSite: 'lax',
         path: '/',
-        // maxAge: 60 * 60 * 1000,
-        maxAge: 60 * 1000,
+        maxAge: 30 * 60 * 1000,
       });
 
       res.cookie('device_id', deviceId, {
@@ -123,8 +123,8 @@ export class AuthController {
 
   @Get('profile')
   @UseGuards(JwtAuthGuard)
-  getProfile(@Req() req) {
-    return req.user;
+  getProfile(@GetUser('id') userId: number) {
+    return this.authService.userProfile(userId);
   }
 
   @Get('admin')

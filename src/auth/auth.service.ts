@@ -3,6 +3,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -139,7 +140,7 @@ export class AuthService {
       // Generate Access Token
       const accessToken = await this.jwtService.signAsync(payload, {
         secret: jwtConstants.secret,
-        expiresIn: '1m',
+        expiresIn: '30m',
       });
 
       // Generate Refresh Token
@@ -169,6 +170,18 @@ export class AuthService {
       console.error('Error during login:', error);
       throw new UnauthorizedException(error.message || 'Login failed');
     }
+  }
+
+  async userProfile(userId: number) {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      select: ['name', 'email'],
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    return user;
   }
 
   async signout(accessToken: string, refreshToken: string, deviceId: string) {
