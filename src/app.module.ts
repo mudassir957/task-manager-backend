@@ -10,6 +10,7 @@ import { CacheableMemory } from 'cacheable';
 import { MailModule } from './mail/mail.module';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
+import { TaskModule } from './task/task.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { APP_GUARD } from '@nestjs/core';
     UsersModule,
     AuthModule,
     MailModule,
+    TaskModule,
     CacheModule.registerAsync({
       useFactory: async () => ({
         stores: [
@@ -40,7 +42,7 @@ import { APP_GUARD } from '@nestjs/core';
     ThrottlerModule.forRoot([
       {
         ttl: 60000,
-        limit: 5,
+        limit: 100,
       },
     ]),
     MailModule,

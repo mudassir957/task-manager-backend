@@ -4,8 +4,10 @@ import {
   Column,
   BeforeInsert,
   BeforeUpdate,
+  OneToMany,
 } from 'typeorm';
 import * as bcrypt from 'bcrypt';
+import { Task } from 'src/task/entities/task.entity';
 
 export enum UserRole {
   ADMIN = 'admin',
@@ -37,6 +39,9 @@ export class User {
 
   @Column({ nullable: true })
   verificationToken: string;
+
+  @OneToMany(() => Task, (task) => task.user, { cascade: true })
+  tasks: Task[];
 
   @BeforeInsert()
   async hashPassword() {
