@@ -1,11 +1,12 @@
 import {
   IsNotEmpty,
-  IsOptional,
   IsEnum,
   IsBoolean,
   IsString,
+  IsDate,
 } from 'class-validator';
 import { TaskPriority } from '../entities/task.entity';
+import { Type } from 'class-transformer';
 
 export class CreateTaskDto {
   @IsNotEmpty()
@@ -17,6 +18,11 @@ export class CreateTaskDto {
 
   @IsBoolean()
   completed: boolean;
+
+  @IsNotEmpty()
+  @IsDate()
+  @Type(() => Date)
+  dueDate: Date;
 
   @IsEnum(TaskPriority)
   priority: TaskPriority;
