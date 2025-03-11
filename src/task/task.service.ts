@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Task } from './entities/task.entity';
-import { Repository } from 'typeorm';
+import { QueryBuilder, Repository } from 'typeorm';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
 import { User } from 'src/users/user.entity';
@@ -29,7 +29,18 @@ export class TaskService {
     priority?: string,
     sortBy?: string,
     sortOrder: 'ASC' | 'DESC' = 'DESC',
-  ): Promise<{ data: Task[]; total: number }> {
+  ): Promise<{
+    overdue: Task[];
+    dueToday: Task[];
+    dueNextWeek: Task[];
+    dueLater: Task[];
+  }> {
+    const today = new Date();
+    const startOfToday = new Date(today.setHours(0, 0, 0, 0));
+    const endOfToday = new Date(today.setHours(23, 59, 59, 999));
+    const nextWeek = new Date();
+    nextWeek.setDate(nextWeek.getDate() + 7);
+
     const query = this.taskRepository
       .createQueryBuilder('task')
       .where('task.userId = :userId', { userId: user.id });
@@ -55,12 +66,26 @@ export class TaskService {
       query.orderBy('task.createdAt', 'DESC');
     }
 
-    const [task, total] = await query
-      .skip((page - 1) * limit)
-      .take(limit)
-      .getManyAndCount();
+    const allTasks = await query.getMany();
 
-    return { data: task, total };
+    const overdue = allTasks.filter(
+      (task) => task.dueDate && task.dueDate < startOfToday,
+    );
+    const dueToday = allTasks.filter(
+      (task) =>
+        task.dueDate &&
+        task.dueDate >= startOfToday &&
+        task.dueDate <= endOfToday,
+    );
+    const dueNextWeek = allTasks.filter(
+      (task) =>
+        task.dueDate && task.dueDate > endOfToday && task.dueDate <= nextWeek,
+    );
+    const dueLater = allTasks.filter(
+      (task) => task.dueDate && task.dueDate > nextWeek,
+    );
+
+    return { overdue, dueToday, dueNextWeek, dueLater };
   }
 
   // ✅ Get Single Task by ID
